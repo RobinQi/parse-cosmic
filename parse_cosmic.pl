@@ -1,54 +1,48 @@
-#!/gsc/bin/perl
+#!/usr/bin/perl
 
 # Author: Cyriac Kandoth
 # Email: ckandoth@gmail.com
-# License: LGPLv3
-# Goal: Take the giant tab-delimited lists of somatic variants downloadable from COSMIC, fix their
-#     various issues, and generate a standardized Build37 variant list in 5-column format
-#
-# Here is a summary of what this script does, when parsing out COSMIC variants:
-#
-#  1. Use only variants with a value of "y" under column Genome-wide screen. This indicates that
-#     whole-genome or exome-seq was performed
-#  2. Use only samples annotated as "primary" or "secondary" under column "Tumour origin"
-#  3. Skip germline variants or variants from samples annotated as normals
-#  4. Skip variants that don't have both nucleotide change and loci provided
-#  5. Skip insertions and deletions longer than 100 base-pairs
-#  6. Skip deletions where the length of deleted base-pairs doesn't fit the provided genomic loci
-#  7. Skip complex indels which are not supported in MAF format
-#  8. If variant loci is only reported on Build36, liftOver to Build37
-#  9. If reference/variant alleles are reported on the reverse strand, standardize it to the
-#     forward strand instead
-# 10. Skip variants where the reported reference allele doesn't match the reference fasta sequence
-#     at that locus
-# 11. After all the above steps, skip hypermutated samples that report more than 1500 variants
+# License: LGPLv3 (The Genome Institute at Washington University)
 
 use strict;
 use warnings;
+use Getopt::Long;
+use Pod::Usage;
 use IO::File;
-use Genome;
-
-# Grab file paths from user
-if( scalar( @ARGV ) != 3 ) {
-  print STDERR "Usage: perl $0 <cosmic_full_file> <cosmic_ins_file> <output_dir>\n";
-  exit 1;
-}
-my $cosmic_full_file = $ARGV[0];
-my $cosmic_ins_file = $ARGV[1];
-my $output_dir = $ARGV[2];
+use File::Temp;
 
 # File paths and constants
 my $max_indel_length = 100;
 my $max_muts_per_sample = 1500;
 my %valid_chrom = map {($_,1)} ( 1..22, qw( X Y MT ));
 my %complement = qw( A T T A C G G C N N );
-my $ref_seq_b37 = "/gscmnt/ams1102/info/model_data/2869585698/build106942997/all_sequences.fa";
-my $ref_seq_b36 = "/gscmnt/gc4096/info/model_data/2741951221/build101947881/all_sequences.fa";
+my $ref_seq_b36 = "/ifs/e63data/leew1/ref/resource/tcga-human-build36-wugsc-1.0.fasta";
+my $ref_seq_b37 = "/ifs/e63data/leew1/ref/resource/GRCh37-lite.fa";
+my $hg18_to_hg19_chain = "/ifs/e63data/sander-lab/kandoth/srv/hg18ToHg19.over.chain";
 
-# Load up the inserted sequences of insertions, which COSMIC happens to store separately for whatever reason
+# Check for missing or crappy arguments
+unless( @ARGV and $ARGV[0]=~m/^-/ ) {
+    pod2usage(-verbose => 0, -message => "$0: Missing or invalid arguments!\n")
+}
+
+# Parse options and print usage if there is a syntax error, or if usage was explicitly requested
+my ( $man, $help ) = ( 0, 0 );
+my ( $cosmic_full_file, $cosmic_ins_file, $output_dir );
+GetOptions( "complete-cosmic-file=s" => \$cosmic_full_file,
+            "inserted-sequence-file=s" => \$cosmic_ins_file,
+            "output-dir=s" => \$output_dir,
+            "b36-fasta:s" => \$ref_seq_b36,
+            "b37-fasta:s" => \$ref_seq_b37,
+            "liftover-chain-hg18-to-hg19:s" => \$hg18_to_hg19_chain,
+            "help" => \$help,
+            man => \$man ) or pod2usage( 2 );
+pod2usage( 1 ) if $help;
+pod2usage( -exitval => 0, -verbose => 2 ) if $man;
+
+# Load up the inserted sequences of insertions, which COSMIC stores separately, for whatever reason
 my %ins_nucs = map{chomp; split(/\t/)} grep {m/^\w+\t[ACGTacgt]+$/} `cut -f 9,11 $cosmic_ins_file`;
 
-# From the main cosmic file, parse out SNVs and small indels from genome-wide screened cases, in a format for the WU annotator
+# From the main COSMIC file, parse out SNVs and small indels, into a minimal 5-column format
 my %vars = ();
 my %tissue_site_counts = ();
 my $cosmicFh = IO::File->new( $cosmic_full_file );
@@ -57,19 +51,21 @@ while( my $line = $cosmicFh->getline ) {
     next if( $line =~ m/^Gene name/ );
     chomp( $line );
     my @col = split( /\t/, $line );
-    my ( $samp_name, $samp_id, $samp_site, $samp_hist, $samp_subtype, $gws, $origin ) = @col[3,4,6,8,9,10,23];
-    my ( $mut_id, $mut_nuc, $mut_aa, $mut_type, $zygos, $hg18_locus, $hg18_strand, $hg19_locus, $hg19_strand, $status ) = @col[11..20];
+    my ( $samp_id, $samp_site, $samp_hist, $samp_subtype, $gws, $origin ) = @col[4,6,8,9,10,23];
+    my ( $mut_id, $mut_nuc, $mut_aa, $mut_type, $zygos, $hg18_locus, $hg18_strand, $hg19_locus,
+        $hg19_strand, $status ) = @col[11..20];
 
     # Skip variants of samples that were not "Genome-wide screened"
     next unless( $gws eq 'y' );
 
-    # Skip variants belonging to recurrent tumors, metastases, adjacent, etc. - We don't want to report the same variant from the same patient more than once
+    # Skip variants belonging to recurrent tumors, metastases, adjacent, etc.
+    # We don't want to report the same variant from the same patient more than once
     next unless( $origin =~ m/^(primary|secondary|surgery)/ );
 
     # Skip known germline variants or variants from samples annotated as normals
     next if( $status =~ m/germline/ or $samp_hist =~ m/NORMAL/ or $samp_subtype =~ m/normal/);
 
-    # Skip mutation types that we cannot annotate
+    # Skip mutation types that are too hard to annotate
     next if( $mut_type =~ m/^Whole gene deletion/ );
 
     # Skip variants that don't have both nucleotide change and loci available
@@ -85,11 +81,10 @@ while( my $line = $cosmicFh->getline ) {
 
     # Fetch the reference sequence at this locus to do some QC
     my $ref_seq = ( $hg18_locus ? $ref_seq_b36 : $ref_seq_b37 );
-    my $decr_start = $start - 1;
-    my $fetched_ref = `echo "$chr\t$decr_start\t$stop" | joinx ref-stats --ref-bases - $ref_seq | grep -v ^# | cut -f 7`;
+    my $fetched_ref = `samtools faidx $ref_seq $chr:$start-$stop | grep -v ^\\>`;
     chomp( $fetched_ref );
 
-    # Try to find out what kind of variant this is, and prep it for WU annotation, if possible
+    # Try to find out what kind of variant this is, and convert it to a minimal 5-column format
     my ( $ref, $var, @tmp );
     if( @tmp = $mut_nuc =~ m/^c\.\d+[+-]*\d*_*\d*[+-]*\d*([ACGTacgt]+)>([ACGTacgt]+)$/ ) { # SNV
         ( $ref, $var ) = ( uc( $tmp[0] ), uc( $tmp[1] ));
@@ -171,44 +166,43 @@ while( my $line = $cosmicFh->getline ) {
 }
 $cosmicFh->close;
 
-# For each sample, create a variant file ready for WU annotation
+# Create a variant file for each sample, in the 5-column format
 my ( $samp_count, $tot_mut_count ) = ( 0, 0 );
-warn "\nRunning liftOver and prepping Build37 files for WU annotation...\n";
+warn "\nRunning liftOver and prepping Build37 files for transcript annotation...\n";
 foreach my $samp_id ( keys %vars ) {
 
-    # Make 2 temporary files to use with liftover
-    my $build36_file = Genome::Sys->create_temp_file_path;
-    my $build37_file = Genome::Sys->create_temp_file_path;
-    ( $build36_file and $build37_file ) or die "Couldn't create a temp file. $!";
+    # Make temporary files to use with liftOver
+    my $build36_fh = File::Temp->new;
+    my $build37_fh = File::Temp->new;
+    my $unmapped_fh = File::Temp->new;
+    ( $build36_fh and $build37_fh and $unmapped_fh ) or die "Couldn't create a temp file. $!";
 
-    # Write any build36 variants into a 5 column WU format for use with liftOver
+    # Write build36 vars to a file in 5-column format, but use 0-based start since liftOver expects BED format
     my $mut_count = 0;
     if( defined $vars{$samp_id}{b36} && scalar( keys %{$vars{$samp_id}{b36}} ) > 0 ) {
         $mut_count += scalar( keys %{$vars{$samp_id}{b36}} );
-        my $outFh = IO::File->new( $build36_file, ">" );
         foreach my $line ( keys %{$vars{$samp_id}{b36}} ) {
-            $outFh->print( $line );
+            my ( $chr, $start, $stop, $ref, $var ) = split( /\t/, $line );
+            $build36_fh->print( join( "\t", $chr, $start-1, $stop, $ref, $var ));
         }
-        $outFh->close;
 
-        # Run liftOver using the wrapper that can handle WU annotation format files
-        my $lift_cmd = Genome::Model::Tools::LiftOver->create(
-            source_file => $build36_file, destination_file => $build37_file,
-            input_is_annoformat => 1, lift_direction => "hg18ToHg19",
-        );
-        ( $lift_cmd->execute ) or die "Failed to run 'gmt lift-over' for variants in $samp_id\n";
-        $lift_cmd->delete;
+        # Run liftOver to convert the Build36 variants to Build37
+        my $lift_cmd = join( " ", "liftOver", $build36_fh, $hg18_to_hg19_chain, $build37_fh, $unmapped_fh );
+        print STDERR "Running liftOver as follows:\n$lift_cmd\n";
+        system( $lift_cmd ) or die "Failed to run 'liftOver' for variants in $samp_id\n";
     }
 
     # Append additional b37 loci to the liftOver'ed file, and remove any duplicates
     if( defined $vars{$samp_id}{b37} && scalar( keys %{$vars{$samp_id}{b37}} ) > 0 ) {
         $mut_count += scalar( keys %{$vars{$samp_id}{b37}} );
-        my $outFh = IO::File->new( $build37_file, ">>" );
         foreach my $line ( keys %{$vars{$samp_id}{b37}} ) {
-            $outFh->print( $line );
+            my ( $chr, $start, $stop, $ref, $var ) = split( /\t/, $line );
+            $build37_fh->print( join( "\t", $chr, $start-1, $stop, $ref, $var ));
         }
-        $outFh->close;
     }
+
+    # Remove duplicate variants that are identifiable only after liftOver
+    my $build37_file = $build37_fh->filename;
     print `sort -u $build37_file -o $build37_file`;
 
     # Sort by loci, and write to output dir, unless this sample is hypermutated
@@ -220,9 +214,78 @@ foreach my $samp_id ( keys %vars ) {
     else {
         warn "Skipped: Hypermutated sample $samp_id with $mut_count variants\n";
     }
+    exit;
 }
 
 print "\nFetched $tot_mut_count SNVs and small indels across $samp_count samples from the following tissue types:\n";
 foreach my $key ( sort {$tissue_site_counts{$b} <=> $tissue_site_counts{$a}} keys %tissue_site_counts ) {
     print $tissue_site_counts{$key} . "\t$key\n";
 }
+
+__END__
+
+=head1 NAME
+
+ parse_cosmic.pl - Parse the giant tab-delimited lists of somatic variants downloadable from COSMIC
+
+=head1 SYNOPSIS
+
+ perl parse_cosmic.pl --complete-cosmic-file CosmicCompleteExport_v66_250713.tsv --inserted-sequence-file CosmicInsMutExport_v66_250713.tsv --output-dir var_files
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<--complete-cosmic-file>
+
+ The CosmicCompleteExport file from ftp.sanger.ac.uk/pub/CGP/cosmic/data_export
+
+=item B<--inserted-sequence-file>
+
+ The CosmicInsMutExport file from ftp.sanger.ac.uk/pub/CGP/cosmic/data_export
+
+=item B<--output-dir>
+
+ An output directory for per-sample variant lists
+
+=item B<--b36-fasta>
+
+ A Build36 (HG18) reference fasta sequence with an accompanying fai index (Default: /ifs/e63data/leew1/ref/resource/tcga-human-build36-wugsc-1.0.fasta)
+
+=item B<--b37-fasta>
+
+ A Build37 (HG19) reference fasta sequence with an accompanying fai index (Default: /ifs/e63data/leew1/ref/resource/GRCh37-lite.fa)
+
+=item B<--liftover-chain-hg18-to-hg19>
+
+ A liftOver chain file to convert hg18 loci to hg19 (Default: /ifs/e63data/sander-lab/kandoth/srv/hg18ToHg19.over.chain)
+
+=item B<--help>
+
+ Prints a brief help message and quits
+
+=item B<--man>
+
+ Prints the detailed manual
+
+=back
+
+=head1 DESCRIPTION
+
+ Takes the giant tab-delimited lists of somatic variants downloadable from COSMIC, fix their various issues, and generate a standardized Build37 variant list in 5-column format
+
+ Here is a summary of what this script does, when parsing out COSMIC variants:
+
+  1. Use only variants with a value of "y" under column Genome-wide screen. This indicates that whole-genome or exome-seq was performed
+  2. Use only samples annotated as "primary" or "secondary" under column "Tumour origin"
+  3. Skip germline variants or variants from samples annotated as normals
+  4. Skip variants that don't have both nucleotide change and loci provided
+  5. Skip insertions and deletions longer than 100 base-pairs
+  6. Skip deletions where the length of deleted base-pairs doesn't fit the provided genomic loci
+  7. Skip complex indels which are not supported in MAF format
+  8. If variant loci is only reported on Build36, liftOver to Build37
+  9. If reference/variant alleles are reported on the reverse strand, standardize it to the forward strand instead
+ 10. Skip variants where the reported reference allele doesn't match the reference fasta sequence at that locus
+ 11. After all the above steps, skip hypermutated samples that report more than 1500 variants
+
+=cut
