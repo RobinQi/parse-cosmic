@@ -1,17 +1,13 @@
-#!/usr/bin/perl
-
-# Author: Cyriac Kandoth
-# Email: ckandoth@gmail.com
-# License: LGPLv3 (The Genome Institute at Washington University)
+#!/usr/bin/perl -w
 
 use strict;
 use warnings;
-use Getopt::Long;
-use Pod::Usage;
 use IO::File;
 use File::Temp;
+use Getopt::Long qw( GetOptions );
+use Pod::Usage qw( pod2usage );
 
-# File paths and constants
+# Default file paths and constants
 my $max_indel_length = 100;
 my $max_muts_per_sample = 1500;
 my %valid_chrom = map {($_,1)} ( 1..22, qw( X Y MT ));
@@ -22,22 +18,30 @@ my $hg18_to_hg19_chain = "/ifs/e63data/sander-lab/kandoth/srv/hg18ToHg19.over.ch
 
 # Check for missing or crappy arguments
 unless( @ARGV and $ARGV[0]=~m/^-/ ) {
-    pod2usage(-verbose => 0, -message => "$0: Missing or invalid arguments!\n")
+    pod2usage( -verbose => 0, -message => "$0: Missing or invalid arguments!\n", -exitval => 2 );
 }
 
 # Parse options and print usage if there is a syntax error, or if usage was explicitly requested
 my ( $man, $help ) = ( 0, 0 );
 my ( $cosmic_full_file, $cosmic_ins_file, $output_dir );
-GetOptions( "complete-cosmic-file=s" => \$cosmic_full_file,
-            "inserted-sequence-file=s" => \$cosmic_ins_file,
-            "output-dir=s" => \$output_dir,
-            "b36-fasta:s" => \$ref_seq_b36,
-            "b37-fasta:s" => \$ref_seq_b37,
-            "liftover-chain-hg18-to-hg19:s" => \$hg18_to_hg19_chain,
-            "help" => \$help,
-            man => \$man ) or pod2usage( 2 );
-pod2usage( 1 ) if $help;
-pod2usage( -exitval => 0, -verbose => 2 ) if $man;
+GetOptions(
+    'help!' => \$help,
+    'man!' => \$man,
+    'complete-cosmic-file=s' => \$cosmic_full_file,
+    'inserted-sequence-file=s' => \$cosmic_ins_file,
+    'output-dir=s' => \$output_dir,
+    'b36-fasta=s' => \$ref_seq_b36,
+    'b37-fasta=s' => \$ref_seq_b37,
+    'liftover-chain-hg18-to-hg19=s' => \$hg18_to_hg19_chain
+) or pod2usage( -verbose => 1, -input => \*DATA, -exitval => 2 );
+
+pod2usage( -verbose => 1, -input => \*DATA, -exitval => 0 ) if( $help );
+pod2usage( -verbose => 2, -input => \*DATA, -exitval => 0 ) if( $man );
+
+# Make sure all our input files exist and are non-zero
+( -s $ref_seq_b36 ) or die "Build36 reference fasta missing!\nPath: $ref_seq_b36\n";
+( -s $ref_seq_b37 ) or die "Build37 reference fasta missing!\nPath: $ref_seq_b37\n";
+( -s $hg18_to_hg19_chain ) or die "liftOver chain missing!\nPath: $hg18_to_hg19_chain\n";
 
 # Load up the inserted sequences of insertions, which COSMIC stores separately, for whatever reason
 my %ins_nucs = map{chomp; split(/\t/)} grep {m/^\w+\t[ACGTacgt]+$/} `cut -f 9,11 $cosmic_ins_file`;
@@ -222,7 +226,7 @@ foreach my $key ( sort {$tissue_site_counts{$b} <=> $tissue_site_counts{$a}} key
     print $tissue_site_counts{$key} . "\t$key\n";
 }
 
-__END__
+__DATA__
 
 =head1 NAME
 
@@ -230,7 +234,7 @@ __END__
 
 =head1 SYNOPSIS
 
- perl parse_cosmic.pl --complete-cosmic-file CosmicCompleteExport_v66_250713.tsv --inserted-sequence-file CosmicInsMutExport_v66_250713.tsv --output-dir var_files
+ perl parse_cosmic.pl --complete-cosmic-file CosmicCompleteExport.tsv --inserted-sequence-file CosmicInsMutExport.tsv --output-dir var_files
 
 =head1 OPTIONS
 
@@ -287,5 +291,13 @@ __END__
   9. If reference/variant alleles are reported on the reverse strand, standardize it to the forward strand instead
  10. Skip variants where the reported reference allele doesn't match the reference fasta sequence at that locus
  11. After all the above steps, skip hypermutated samples that report more than 1500 variants
+
+=head1 AUTHOR
+
+ Cyriac Kandoth (ckandoth@gmail.com)
+
+=head1 LICENSE
+
+ LGPLv3 (The Genome Institute, Washington University, St Louis, MO 63108, USA)
 
 =cut
