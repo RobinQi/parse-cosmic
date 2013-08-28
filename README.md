@@ -59,7 +59,9 @@ Get Build37 and Build36 reference fasta files from Ensembl, and generate indexes
     gunzip Homo_sapiens.NCBI36.54.dna.toplevel.fa.gz
     samtools faidx Homo_sapiens.NCBI36.54.dna.toplevel.fa
 
-Notes
+Usage
 -----
 
-Type `perl parse_cosmic.pl --help` for usage, and `perl parse_cosmic.pl --man` for the full manual.
+    perl parse_cosmic.pl --complete-cosmic-file CosmicCompleteExport.tsv --inserted-sequence-file CosmicInsMutExport.tsv --output-dir var_files --b36-fasta Homo_sapiens.NCBI36.54.dna.toplevel.fa --b37-fasta Homo_sapiens.GRCh37.72.dna.primary_assembly.fa --liftover-chain-hg18-to-hg19 hg18ToHg19.over.chain
+
+Type `perl parse_cosmic.pl --help` for usage, or `perl parse_cosmic.pl --man` for the full manual.

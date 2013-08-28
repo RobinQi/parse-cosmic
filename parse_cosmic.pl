@@ -3,15 +3,15 @@
 use strict;
 use warnings;
 use IO::File;
-use File::Temp;
+use File::Temp qw( tempdir );
 use Getopt::Long qw( GetOptions );
 use Pod::Usage qw( pod2usage );
 
 # Default file paths and constants
 my $max_indel_length = 100;
 my $max_muts_per_sample = 1500;
-my %valid_chrom = map {($_,1)} ( 1..22, qw( X Y MT ));
-my %complement = qw( A T T A C G G C N N );
+my %valid_chrom = map{($_,1)} ( 1..22, qw( X Y MT ));
+my %complement = qw( A T T A C G G C N N - - );
 my $ref_seq_b36 = "/ifs/e63data/leew1/ref/resource/tcga-human-build36-wugsc-1.0.fasta";
 my $ref_seq_b37 = "/ifs/e63data/leew1/ref/resource/GRCh37-lite.fa";
 my $hg18_to_hg19_chain = "/ifs/e63data/sander-lab/kandoth/srv/hg18ToHg19.over.chain";
@@ -90,11 +90,15 @@ while( my $line = $cosmicFh->getline ) {
 
     # Try to find out what kind of variant this is, and convert it to a minimal 5-column format
     my ( $ref, $var, @tmp );
-    if( @tmp = $mut_nuc =~ m/^c\.\d+[+-]*\d*_*\d*[+-]*\d*([ACGTacgt]+)>([ACGTacgt]+)$/ ) { # SNV
+    if( @tmp = $mut_nuc =~ m/^c\.\d+[+-]*\d*_*\d*[+-]*\d*([ACGTacgt]+)>([ACGTacgt]+)$/ ) { # SNP/DNP/ONP
         ( $ref, $var ) = ( uc( $tmp[0] ), uc( $tmp[1] ));
     }
-    elsif( @tmp = $mut_nuc =~ m/^c\.\d+[+-]*\d*_*\d*[+-]*\d*ins([ACGTacgt]+)$/ ) { # insertion
+    elsif( @tmp = $mut_nuc =~ m/^c\.\d+[+-]*\d*_*\d*[+-]*\d*ins([ACGTacgt]+)$/ ) { # Insertion
         ( $ref, $var ) = ( "-", uc( $tmp[0] ));
+        unless( defined $ins_nucs{$mut_id} ) {
+            warn "Skipped: Sequence unavailable for insertion with mutation ID# $mut_id at $build locus: $locus\n";
+            next;
+        }
         my $ins_nuc = uc( $ins_nucs{$mut_id} );
         if( length( $var ) > $max_indel_length ) {
             warn "Skipped: Long insertion >$max_indel_length bps in $mut_nuc at $build locus: $locus\n";
@@ -105,7 +109,7 @@ while( my $line = $cosmicFh->getline ) {
             next;
         }
     }
-    elsif( @tmp = $mut_nuc =~ m/^c\.\d+[+-]*\d*_*\d*[+-]*\d*del([ACGTacgt]+)$/ ) { # deletion
+    elsif( @tmp = $mut_nuc =~ m/^c\.\d+[+-]*\d*_*\d*[+-]*\d*del([ACGTacgt]+)$/ ) { # Deletion
         ( $ref, $var ) = ( uc( $tmp[0] ), "-" );
         if( length( $ref ) > $max_indel_length ) {
             warn "Skipped: Long deletion >$max_indel_length bps in $mut_nuc at $build locus: $locus\n";
@@ -116,7 +120,7 @@ while( my $line = $cosmicFh->getline ) {
             next;
         }
     }
-    elsif( @tmp = $mut_nuc =~ m/^c\.\d+[+-]*\d*_*\d*[+-]*\d*del(\d+)$/ ) { # deletion without sequence specified
+    elsif( @tmp = $mut_nuc =~ m/^c\.\d+[+-]*\d*_*\d*[+-]*\d*del(\d+)$/ ) { # Deletion without sequence specified
         my $del_length = $tmp[0];
         if( $del_length > $max_indel_length ) {
             warn "Skipped: Long deletion >$max_indel_length bps in $mut_nuc at $build locus: $locus\n";
@@ -135,7 +139,7 @@ while( my $line = $cosmicFh->getline ) {
         next;
     }
 
-    unless(( length($ref)==1 && length($var)==1 ) || ( length($ref)==2 && length($var)==2 ) ||
+    unless(( length($ref) == length($var) && length($ref) <= 3 ) ||
            ( $ref eq "-" && $var=~m/[ACGT]+/ ) || ( $ref=~m/[ACGT]+/ && $var eq "-" )) {
         warn "Skipped: Cannot annotate $ref/$var at $build locus: $locus\n";
         next;
@@ -143,17 +147,18 @@ while( my $line = $cosmicFh->getline ) {
 
     # Reverse complement the ref/var if the variant is from the negative strand
     my $locus_strand = ( $hg18_strand ? $hg18_strand : $hg19_strand );
-    my $rc_ref = reverse map {$complement{$_}} split( //, $ref );
-    if( $locus_strand eq "-" and $rc_ref eq $fetched_ref ) {
+    my $rc_ref = reverse map{$complement{$_}} split( //, $ref );
+    # When possible, trust the fetched_ref to determine strand. COSMIC's strand info is sometimes wrong
+    if( $rc_ref eq $fetched_ref or ( $ref eq "-" and $locus_strand eq "-" )) {
         if( $ref eq "-" && $var =~ m/[ACGT]+/ ) {
-            $var = reverse map {$complement{$_}} split( //, $var );
+            $var = reverse map{$complement{$_}} split( //, $var );
         }
         elsif( $ref =~ m/[ACGT]+/ && $var eq "-" ) {
             $ref = $rc_ref;
         }
         else {
             $ref = $rc_ref;
-            $var = reverse map {$complement{$_}} split( //, $var );
+            $var = reverse map{$complement{$_}} split( //, $var );
         }
     }
 
@@ -163,10 +168,14 @@ while( my $line = $cosmicFh->getline ) {
         next;
     }
 
-    # If we got to this point, then the variant can be annotated. Store info about it into a hash
+    # Save information on the tumor type/histology where available
     $samp_site = $samp_hist if( $samp_site eq "NS" );
     ++$tissue_site_counts{$samp_site} unless( defined $vars{$samp_id} );
-    $vars{$samp_id}{$build}{"$chr\t$start\t$stop\t$ref\t$var\n"} = 1;
+
+    # If we got to this point, then the variant can be annotated. Store info about it into a hash
+    # Also add a chr-prefix and use 0-based start loci, to simplify liftOver and sortBed done later
+    $start--;
+    $vars{$samp_id}{$build}{"chr$chr\t$start\t$stop\t$ref\t$var\n"} = 1;
 }
 $cosmicFh->close;
 
@@ -176,49 +185,50 @@ warn "\nRunning liftOver and prepping Build37 files for transcript annotation...
 foreach my $samp_id ( keys %vars ) {
 
     # Make temporary files to use with liftOver
-    my $build36_fh = File::Temp->new;
-    my $build37_fh = File::Temp->new;
-    my $unmapped_fh = File::Temp->new;
-    ( $build36_fh and $build37_fh and $unmapped_fh ) or die "Couldn't create a temp file. $!";
+    my $tmp_dir = tempdir;
+    ( -e $tmp_dir ) or die "Couldn't create a temporary directory!";
+    my $build36_file = "$tmp_dir/build36";
+    my $build37_file = "$tmp_dir/build37";
+    my $unmapped_file = "$tmp_dir/unmapped";
 
     # Write build36 vars to a file in 5-column format, but use 0-based start since liftOver expects BED format
-    my $mut_count = 0;
     if( defined $vars{$samp_id}{b36} && scalar( keys %{$vars{$samp_id}{b36}} ) > 0 ) {
-        $mut_count += scalar( keys %{$vars{$samp_id}{b36}} );
+        my $build36_fh = IO::File->new( $build36_file, ">" );
         foreach my $line ( keys %{$vars{$samp_id}{b36}} ) {
-            my ( $chr, $start, $stop, $ref, $var ) = split( /\t/, $line );
-            $build36_fh->print( join( "\t", $chr, $start-1, $stop, $ref, $var ));
+            $build36_fh->print( $line );
         }
+        $build36_fh->close;
 
-        # Run liftOver to convert the Build36 variants to Build37
-        my $lift_cmd = join( " ", "liftOver", $build36_fh, $hg18_to_hg19_chain, $build37_fh, $unmapped_fh );
-        print STDERR "Running liftOver as follows:\n$lift_cmd\n";
-        system( $lift_cmd ) or die "Failed to run 'liftOver' for variants in $samp_id\n";
+        # Run liftOver to map the Build36 variants to Build37. Discard those that cannot be mapped
+        print `liftOver $build36_file $hg18_to_hg19_chain $build37_file $unmapped_file >/dev/null 2>&1`;
     }
 
     # Append additional b37 loci to the liftOver'ed file, and remove any duplicates
     if( defined $vars{$samp_id}{b37} && scalar( keys %{$vars{$samp_id}{b37}} ) > 0 ) {
-        $mut_count += scalar( keys %{$vars{$samp_id}{b37}} );
+        my $build37_fh = IO::File->new( $build37_file, ">>" );
         foreach my $line ( keys %{$vars{$samp_id}{b37}} ) {
-            my ( $chr, $start, $stop, $ref, $var ) = split( /\t/, $line );
-            $build37_fh->print( join( "\t", $chr, $start-1, $stop, $ref, $var ));
+            $build37_fh->print( $line );
         }
+        $build37_fh->close;
     }
 
-    # Remove duplicate variants that are identifiable only after liftOver
-    my $build37_file = $build37_fh->filename;
+    # Remove duplicate variants that are identifiable only after liftOver, and count those remaining
     print `sort -u $build37_file -o $build37_file`;
+    my ( $mut_count ) = map{split(/\s+/)}`wc -l $build37_file`;
 
-    # Sort by loci, and write to output dir, unless this sample is hypermutated
+    # Sort by loci, restore 1-based start loci, and write to output dir, unless this sample is hypermutated
     if( -s $build37_file && $mut_count <= $max_muts_per_sample ) {
         ++$samp_count;
         $tot_mut_count += $mut_count;
-        print `joinx sort -s -i $build37_file -o $output_dir/$samp_id.var`;
+        unlink( "$output_dir/$samp_id.var" ) if( -e "$output_dir/$samp_id.var" );
+        print `sed 's/^chr//' $build37_file | sortBed | awk '{OFS="\\t"; ++\$2; print}' > $output_dir/$samp_id.var`;
+    }
+    elsif( ! -s $build37_file ) {
+        die "Unexpected empty file $build37_file!";
     }
     else {
         warn "Skipped: Hypermutated sample $samp_id with $mut_count variants\n";
     }
-    exit;
 }
 
 print "\nFetched $tot_mut_count SNVs and small indels across $samp_count samples from the following tissue types:\n";
@@ -234,7 +244,7 @@ __DATA__
 
 =head1 SYNOPSIS
 
- perl parse_cosmic.pl --complete-cosmic-file CosmicCompleteExport.tsv --inserted-sequence-file CosmicInsMutExport.tsv --output-dir var_files
+ perl parse_cosmic.pl --complete-cosmic-file CosmicCompleteExport.tsv --inserted-sequence-file CosmicInsMutExport.tsv --output-dir var_files --b36-fasta Homo_sapiens.NCBI36.54.dna.toplevel.fa --b37-fasta Homo_sapiens.GRCh37.72.dna.primary_assembly.fa --liftover-chain-hg18-to-hg19 hg18ToHg19.over.chain
 
 =head1 OPTIONS
 
