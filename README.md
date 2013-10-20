@@ -16,20 +16,17 @@ For Fedora, CentOS6 or RHEL6 users:
 
     sudo yum install samtools BEDTools
 
-All other users can compile samtools and bedtools binaries from source code:
+All other users can compile samtools and bedtools binaries from source code, and move the binaries somewhere that your system PATH can find it:
 
     git clone https://github.com/arq5x/bedtools.git
     cd bedtools
     make
     cd ..
+    sudo mv bedtools/bin/* /usr/local/bin/
     git clone https://github.com/samtools/samtools.git
     cd samtools
     make
     cd ..
-
-After compilation, the binaries can be moved somewhere that your system PATH can find it. For example:
-
-    sudo mv bedtools/bin/* /usr/local/bin/
     sudo mv samtools/samtools /usr/local/bin/
 
 Input data
@@ -37,25 +34,25 @@ Input data
 
 Get the latest tab-delimited file from COSMIC that lists somatic mutations, but excludes fusions:
 
-    wget ftp://ftp.sanger.ac.uk/pub/CGP/cosmic/data_export/CosmicCompleteExport_v*.tsv.gz
+    curl -LO ftp://ftp.sanger.ac.uk/pub/CGP/cosmic/data_export/CosmicCompleteExport_v*.tsv.gz
     gunzip CosmicCompleteExport_v*.tsv.gz
 
 Get the file that lists sequences for each insertion (COSMIC stores this separately, dunno why):
 
-    wget ftp://ftp.sanger.ac.uk/pub/CGP/cosmic/data_export/CosmicInsMutExport_v*.tsv.gz
+    curl -LO ftp://ftp.sanger.ac.uk/pub/CGP/cosmic/data_export/CosmicInsMutExport_v*.tsv.gz
     gunzip CosmicInsMutExport_v*.tsv.gz
 
 Get the liftOver chain to convert Build36 to Build37:
 
-    wget http://hgdownload.cse.ucsc.edu/goldenPath/hg18/liftOver/hg18ToHg19.over.chain.gz
+    curl -LO http://hgdownload.cse.ucsc.edu/goldenPath/hg18/liftOver/hg18ToHg19.over.chain.gz
     gunzip hg18ToHg19.over.chain.gz
 
-Get Build37 and Build36 reference fasta files from Ensembl, and generate indexes for them:
+Get Build37 and Build36 reference fasta files from Ensembl, and index them with samtools:
 
-    wget ftp://ftp.ensembl.org/pub/release-72/fasta/homo_sapiens/dna/Homo_sapiens.GRCh37.72.dna.primary_assembly.fa.gz
+    curl -LO ftp://ftp.ensembl.org/pub/release-72/fasta/homo_sapiens/dna/Homo_sapiens.GRCh37.72.dna.primary_assembly.fa.gz
     gunzip Homo_sapiens.GRCh37.72.dna.primary_assembly.fa.gz
     samtools faidx Homo_sapiens.GRCh37.72.dna.primary_assembly.fa
-    wget ftp://ftp.ensembl.org/pub/release-54/fasta/homo_sapiens/dna/Homo_sapiens.NCBI36.54.dna.toplevel.fa.gz
+    curl -LO ftp://ftp.ensembl.org/pub/release-54/fasta/homo_sapiens/dna/Homo_sapiens.NCBI36.54.dna.toplevel.fa.gz
     gunzip Homo_sapiens.NCBI36.54.dna.toplevel.fa.gz
     samtools faidx Homo_sapiens.NCBI36.54.dna.toplevel.fa
 
