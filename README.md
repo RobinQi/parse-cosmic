@@ -1,7 +1,23 @@
 parse-cosmic
 ============
 
-This is a script to carefully parse through and standardize somatic variants downloadable from Sanger's [COSMIC database](http://cancer.sanger.ac.uk/cancergenome/projects/cosmic/). As inputs, you will need 2 tab-delimited files from COSMIC, reference fasta files for Build36 (hg18) and Build37 (hg19), and a liftOver chain file to convert Build36 variant loci to Build37 where necessary. The script also requires liftOver, samtools, and the bedtools' binaries in your system PATH. For more details, keep reading.
+This is a script to carefully parse through and standardize somatic variants downloadable from Sanger's [COSMIC database](http://cancer.sanger.ac.uk/cancergenome/projects/cosmic/). As inputs, you will need 2 tab-delimited files from COSMIC, reference fasta files for Build36 (hg18) and Build37 (hg19), and a liftOver chain file to convert Build36 variant loci to Build37 where necessary. The script also requires liftOver, samtools, and the bedtools' binaries in your system PATH. For more details, see the sections below.
+
+Below is a summary of what this script does, when parsing out COSMIC variants. You may not want to apply all these strict filters. If you want to pick and choose filters, you'll need to edit the code. But don't worry... it's really easy to read and decently commented.
+
+  1. Use only samples annotated as "primary" or "secondary" under column "Tumour origin"
+  2. Use only variants with a value of "y" under column "Genome-wide screen". This indicates that whole-genome or exome-seq was performed. Variants from studies that target specific genes are usually older and not based on NGS
+  3. Skip germline variants or variants from samples annotated as normals
+  4. Skip variants that don't have both nucleotide change and loci provided
+  5. Skip insertions and deletions longer than 100 base-pairs
+  6. Skip deletions where the length of deleted base-pairs doesn't fit the provided genomic loci
+  7. Skip complex indels that are not supported in TCGA MAF format
+  8. If variant loci is only reported on Build36, liftOver to Build37
+  9. If reference/variant alleles are reported on the reverse strand, standardize it to the forward strand instead
+  10. Skip variants where the reported reference allele doesn't match the reference fasta sequence at that locus
+  11. After all the above steps, skip hypermutated samples that report more than 1500 variants
+
+The final output is a Build37 variant list in a familiar 5-column format. With minor edits, you should be able to pass this into an annotator like snpEff, Ensembl VEP, or annovar.
 
 Dependencies
 ------------
